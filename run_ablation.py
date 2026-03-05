@@ -16,7 +16,7 @@ from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error
 from scipy import stats
 from utils import set_seed
 
-# 导入你的消融版 HeSCo 类
+# Import HeSCo class
 from hesco import HeSCo
 
 # Suppress warnings
@@ -27,7 +27,7 @@ os.environ['LOKY_MAX_CPU_COUNT'] = '4'
 
 # ================= Configuration =================
 DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
-SEEDS = [42, 123, 456, 789, 1011, 2024, 2025, 888, 999, 1111]   # 10个随机种子
+SEEDS = [42, 123, 456, 789, 1011, 2024, 2025, 888, 999, 1111]   # 10 random seeds
 TARGET_DATASETS = [
     "Pol.csv",              
     "Ames_Housing.csv",     
@@ -40,9 +40,9 @@ TEST_SIZE = 0.50
 LABELED_RATIO = 0.20       
 VERBOSE = False            
 
-# 显著性分析配置
+# Significance analysis configuration
 ENABLE_SIGNIFICANCE_TEST = True 
-SIGNIFICANCE_BASELINE = "HeSCo (Full)" # 基准模型名称 (必须与 configs 中的名称一致)
+SIGNIFICANCE_BASELINE = "HeSCo (Full)" # Baseline model name (must match name in configs)
 # ===============================================
 
 class Logger(object):

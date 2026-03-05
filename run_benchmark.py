@@ -105,7 +105,7 @@ def run_benchmark():
     log_dir = os.path.join(os.path.dirname(__file__), "logs")
     os.makedirs(log_dir, exist_ok=True)
     
-    # 主日志 (包含所有打印信息)
+    # Main log (contains all printed information)
     log_filename = os.path.join(log_dir, f"hesco_benchmark_log_{timestamp_str}.log")
     sys.stdout = Logger(log_filename)
 
@@ -131,7 +131,7 @@ def run_benchmark():
         print(f"\nProcessing Dataset: {dataset_name}")
         print("-" * 80)
         
-        # 存储当前数据集的结果
+        # Store results for the current dataset
         # current_dataset_results[algo] = [ {RMSE:.., R2:..}, ... ]
         current_dataset_results = defaultdict(list)
         
@@ -143,7 +143,7 @@ def run_benchmark():
                 if VERBOSE:
                     print(f"\n  [Seed {seed}] Processing...")
                 else:
-                    # 打印进度点，不换行
+                    # Print progress dots without newline
                     sys.stdout.terminal.write(f".") 
                     sys.stdout.terminal.flush()
 

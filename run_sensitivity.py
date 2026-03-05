@@ -10,11 +10,11 @@ import datetime
 import platform
 import sklearn
 import torch
-import xgboost as xgb # [新增] 用于计算纯监督的基线分数
+import xgboost as xgb # [New] Used to calculate purely supervised baseline scores
 from sklearn.metrics import mean_squared_error, r2_score
 
 # ============================================================
-# 1. 导入依赖与配置
+# 1. Import dependencies and configuration
 # ============================================================
 
 try:
@@ -23,7 +23,7 @@ try:
     from utils import set_seed
     from hesco import HeSCo
 except ImportError as e:
-    print(f"Error: 缺少必要文件。请确保 'hesco.py' 和 'run_benchmark.py' 在当前目录。\n详细错误: {e}")
+    print(f"Error: Missing required files. Please ensure 'hesco.py' and 'run_benchmark.py' are in the current directory.\nDetailed error: {e}")
     sys.exit(1)
 
 # 全局配置
@@ -42,16 +42,16 @@ TARGET_DATASETS = [
 ]
 
 SENSITIVITY_CONFIG = {
-    # 证明伪标签权重的鲁棒性 (加入 0.0 与消融实验对齐)
+    # Demonstrate robustness of pseudo-label weights (include 0.0 to align with ablation study)
     "unlabeled_weight_ratio": [0.0, 0.1, 0.3, 0.5, 0.8],
     
-    # 证明平滑分位数 (你的核心创新) 不是一个脆弱的魔法数字
+    # Demonstrate that smooth quantiles (core innovation) are not fragile magic numbers
     "pinball_beta": [0.01, 0.05, 0.1, 0.5, 1.0], 
     
-    # 证明质与量的权衡：过滤最自信的 10% 还是 70%？
+    # Demonstrate trade-off between quality and quantity: filter top 10% vs 70% confident samples
     "conf_percentile": [10, 30, 50, 70, 90],
     
-    # 互学习迭代的深浅
+    # Depth of mutual learning iterations
     "inc_trees": [10, 30, 50, 100],
     
     "batch_size": [128, 256, 512]
@@ -73,7 +73,7 @@ DEFAULT_PARAMS = {
 
 SEEDS = [42, 123, 456] 
 
-# ================= 辅助函数 =================
+# ================= Helper Functions =================
 
 def print_repro_info():
     print("Reproducibility:")
@@ -102,7 +102,7 @@ def get_dataset_splits_with_preprocessing(dataset_name, seed):
 
 def compute_xgboost_baselines(datasets, seeds):
     """
-    运行 Supervised XGBoost 获取基线分数，用于画图时的虚线参考。
+    Run Supervised XGBoost to get baseline scores for reference in plots.
     """
     print("\n--- Pre-computing Supervised XGBoost Baselines ---")
     baselines = {}
@@ -136,7 +136,7 @@ def run_single_experiment(dataset, param_name, param_value, seed):
     current_params = DEFAULT_PARAMS.copy()
     current_params[param_name] = param_value
     
-    # 当权重参数为 0 时，等价于关闭互学习，节省开销
+    # When weight parameter is 0, it is equivalent to turning off mutual learning to save overhead
     if param_name in ["unlabeled_weight_ratio", "adversarial_weight"] and param_value == 0.0:
         current_params["use_mutual_update"] = False
 
@@ -236,14 +236,14 @@ def main():
                 
                 if data_ds.empty: continue
                 
-                # 画 HeSCo 折线
+                # Plot HeSCo line
                 sns.lineplot(
                     data=data_ds, x="Value", y="R2", 
                     marker="o", markersize=8, linewidth=2.5,
                     errorbar='sd', ax=ax, color=palette[i], label="HeSCo"
                 )
                 
-                # 画基准虚线
+                # Plot baseline dashed line
                 ax.axhline(y=baselines.get(dataset, 0.0), color='gray', linestyle='--', linewidth=2, label="XGB Baseline")
                 
                 ax.set_title(dataset.replace(".csv", ""), fontsize=14, fontweight='bold', pad=10)

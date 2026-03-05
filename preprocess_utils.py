@@ -10,22 +10,22 @@ def preprocess_data(X_lbl, X_unl, X_test, cat_threshold=10):
     Preprocesses data for NN and Tree-based models without data leakage.
     Uses ColumnTransformer for robust and scalable feature engineering.
     """
-    # 1. 统一转换为 DataFrame 以便基于列名操作
+    # 1. Uniformly convert to DataFrame for column-based operations
     if not isinstance(X_lbl, pd.DataFrame):
         X_lbl = pd.DataFrame(X_lbl)
     X_unl = pd.DataFrame(X_unl, columns=X_lbl.columns) if not isinstance(X_unl, pd.DataFrame) else X_unl.copy()
     X_test = pd.DataFrame(X_test, columns=X_lbl.columns) if not isinstance(X_test, pd.DataFrame) else X_test.copy()
     
-    # 确保类别列在拟合前统一转换为字符串，避免 SimpleImputer(fill_value='Missing') 在数值列上报错
-    # 我们先在备份上操作
+    # Ensure categorical columns are converted to strings before fitting to avoid SimpleImputer errors.
+    # Operate on copies to avoid side effects.
     X_lbl = X_lbl.copy()
     X_unl = X_unl.copy()
     X_test = X_test.copy()
     
-    # 拼接训练集用于拟合统计量 (防止特征泄露)
+    # Concatenate training sets for fitting statistics (prevents data leakage)
     X_train = pd.concat([X_lbl, X_unl], axis=0, ignore_index=True)
 
-    # 2. 剔除常数列 (Constant Features)
+    # 2. Remove constant features
     constant_cols = [col for col in X_train.columns if X_train[col].nunique(dropna=True) <= 1]
     if constant_cols:
         X_train.drop(columns=constant_cols, inplace=True)
@@ -33,11 +33,11 @@ def preprocess_data(X_lbl, X_unl, X_test, cat_threshold=10):
         X_unl.drop(columns=constant_cols, inplace=True)
         X_test.drop(columns=constant_cols, inplace=True)
 
-    # 3. 特征分类推断逻辑 (Feature Typing)
+    # 3. Feature type inference
     obj_cols = set(X_train.select_dtypes(include=['object', 'category', 'bool']).columns)
     int_cols = X_train.select_dtypes(include=['int64', 'int32', 'int16', 'int8', 'uint64', 'uint32', 'uint16', 'uint8']).columns
     
-    # 将 unique 值较少的整数列也视为类别特征
+    # Treat integer columns with few unique values as categorical features
     for col in int_cols:
         if X_train[col].nunique(dropna=True) <= cat_threshold:
             obj_cols.add(col)
@@ -45,42 +45,42 @@ def preprocess_data(X_lbl, X_unl, X_test, cat_threshold=10):
     cat_cols = list(obj_cols)
     num_cols = [c for c in X_train.columns if c not in cat_cols]
 
-    # 重要：将所有推断出的类别列转换为字符串类型，否则 SimpleImputer 的 'Missing' 填充会报错
+    # Important: Convert inferred categorical columns to strings for SimpleImputer constant filling
     for col in cat_cols:
         X_lbl[col] = X_lbl[col].astype(str)
         X_unl[col] = X_unl[col].astype(str)
         X_test[col] = X_test[col].astype(str)
     
-    # 更新 X_train 以便拟合
+    # Update X_train for fitting
     X_train = pd.concat([X_lbl, X_unl], axis=0, ignore_index=True)
 
-    # 进一步区分低基数(Low Cardinality)和高基数(High Cardinality)类别特征
+    # Distinguish between low and high cardinality categorical features
     low_card_cats = [col for col in cat_cols if X_train[col].nunique(dropna=True) <= cat_threshold]
     high_card_cats = [col for col in cat_cols if col not in low_card_cats]
 
-    # 4. 构建 sklearn Pipelines (核心逻辑)
+    # 4. Build sklearn Pipelines (core logic)
     
-    # 数值型：中位数填充 -> 标准化
+    # Numerical: Median imputation -> Standardization
     num_pipeline = Pipeline([
         ('imputer', SimpleImputer(strategy='median')),
         ('scaler', StandardScaler())
     ])
 
-    # 低基数类别：常量填充 -> One-Hot 编码
-    # sparse_output=False 确保输出密集矩阵，适配 NN
+    # Low-cardinality categorical: Constant imputation -> One-Hot encoding
+    # sparse_output=False ensures a dense matrix for Neural Networks
     cat_low_pipeline = Pipeline([
         ('imputer', SimpleImputer(strategy='constant', fill_value='Missing')),
         ('onehot', OneHotEncoder(handle_unknown='ignore', sparse_output=False))
     ])
 
-    # 高基数类别：常量填充 -> Ordinal 编码
-    # 注意：这里编码后输出的是整数索引，不再经过 StandardScaler！
+    # High-cardinality categorical: Constant imputation -> Ordinal encoding
+    # Note: These are integer indices and do not undergo Standardization
     cat_high_pipeline = Pipeline([
         ('imputer', SimpleImputer(strategy='constant', fill_value='Missing')),
         ('ordinal', OrdinalEncoder(handle_unknown='use_encoded_value', unknown_value=-1))
     ])
 
-    # 5. 组合 ColumnTransformer
+    # 5. Combine with ColumnTransformer
     transformers = []
     if num_cols:
         transformers.append(('num', num_pipeline, num_cols))
@@ -91,7 +91,7 @@ def preprocess_data(X_lbl, X_unl, X_test, cat_threshold=10):
 
     preprocessor = ColumnTransformer(transformers=transformers, remainder='drop', n_jobs=None)
 
-    # 6. 拟合与转换 (Fit on Train, Transform on All)
+    # 6. Fit and transform (Fit on Train, Transform on All)
     preprocessor.fit(X_train)
     
     X_lbl_out = preprocessor.transform(X_lbl)

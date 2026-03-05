@@ -11,7 +11,7 @@ HeSCo is a powerful semi-supervised learning framework for regression tasks. It 
 
 ## 📦 Installation
 
-Ensure you have Python 3.8+ installed. Install the required dependencies using pip:
+Ensure you have Python 3.11+ installed. Install the required dependencies using pip:
 
 ```bash
 pip install -r requirements.txt

@@ -13,19 +13,17 @@ import warnings
 import os
 import copy
 
-# 环境配置
+# Environment configuration
 os.environ['LOKY_MAX_CPU_COUNT'] = '4'
 warnings.filterwarnings('ignore')
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-# =============================================================================
-# 1. 核心损失函数模块 (From nr_sgp.py)
-# =============================================================================
+# 1. Core Loss Function Module
 
 class RobustLoss(nn.Module):
     """
-    Log-Cosh Loss: 
-    比 MSE 对异常值更鲁棒，比 MAE 在零点处更平滑（二阶可导）。
+    Log-Cosh Loss:
+    More robust to outliers than MSE, and smoother at zero than MAE (second-order differentiable).
     Loss = log(cosh(y_pred - y_true)) ≈ x^2/2 (x small) or |x| - log(2) (x large)
     """
     def __init__(self, alpha=1.0):
@@ -34,13 +32,11 @@ class RobustLoss(nn.Module):
             
     def forward(self, pred, target):
         diff = pred - target
-        # 使用 log(1 + x^2) 近似 log(cosh(x)) 的效果，计算更稳定
+        # Use log(1 + x^2) to approximate log(cosh(x)) for better numerical stability
         loss = torch.log(1 + (diff ** 2) / self.alpha)
         return loss.mean()
 
-# =============================================================================
-# 2. 神经网络架构 (From nr_sgp.py)
-# =============================================================================
+# 2. Neural Network Architecture
 
 class ResBlock(nn.Module):
     def __init__(self, dim, dropout=0.1):
@@ -63,19 +59,19 @@ class RegressionNetwork(nn.Module):
     def __init__(self, input_dim, hidden_dim=128, num_blocks=2, dropout=0.1):
         super().__init__()
         
-        # 输入投影
+        # Input projection
         self.input_proj = nn.Sequential(
             nn.Linear(input_dim, hidden_dim),
             nn.LayerNorm(hidden_dim),
             nn.ReLU(inplace=True)
         )
         
-        # 残差骨干网络
+        # Residual backbone
         self.blocks = nn.ModuleList([
             ResBlock(hidden_dim, dropout) for _ in range(num_blocks)
         ])
         
-        # 预测头
+        # Prediction head
         self.pred_head = nn.Linear(hidden_dim, 1)
     
     def forward(self, x):
@@ -84,17 +80,15 @@ class RegressionNetwork(nn.Module):
             h = block(h)
         return self.pred_head(h)
 
-# =============================================================================
-# 3. Co-Training 核心算法类
-# =============================================================================
+# 3. Core Co-Training Algorithm
 
 class CoTrainingRegressor(BaseEstimator, RegressorMixin):
     def __init__(
         self,
         # --- Co-Training Params ---
-        max_iter=3,             # 最大迭代轮数
-        samples_per_iter=500,      # 每轮每个视图选择的高置信度样本数
-        pool_size=5000,          # 每轮从 Unlabeled Pool 中采样的候选集大小
+        max_iter=3,             # Maximum number of iterations
+        samples_per_iter=500,      # Number of high-confidence samples per view per iteration
+        pool_size=5000,          # Size of the candidate unlabeled pool per iteration
         
         # --- XGBoost Params ---
         xgb_params=None,
@@ -105,7 +99,7 @@ class CoTrainingRegressor(BaseEstimator, RegressorMixin):
         dropout=0.1,
         lr=1e-3,
         batch_size=256,
-        epochs=50,               # 每轮 Co-Training 的训练轮数
+        epochs=50,               # Number of training epochs per Co-Training iteration
         
         # --- Common Params ---
         standardize_input=True,
@@ -143,7 +137,7 @@ class CoTrainingRegressor(BaseEstimator, RegressorMixin):
         self.random_state = random_state
         self.verbose = verbose
         
-        # 内部状态
+        # Internal states
         self.scaler_x = StandardScaler()
         self.scaler_y = StandardScaler()
         self.xgb_model = None
@@ -158,7 +152,7 @@ class CoTrainingRegressor(BaseEstimator, RegressorMixin):
         self.L2_y = None
 
     def _train_xgboost(self, X, y):
-        """ 训练一个全新的 XGBoost """
+        """ Train a fresh XGBoost model """
         params = self.xgb_params.copy()
         params['random_state'] = self.random_state
         model = xgb.XGBRegressor(**params)
@@ -166,7 +160,7 @@ class CoTrainingRegressor(BaseEstimator, RegressorMixin):
         return model
 
     def _train_nn(self, X, y, init_model=None):
-        """ 训练神经网络 (支持 fine-tuning 或从头训练) """
+        """ Train the neural network (supports fine-tuning or training from scratch) """
         if init_model:
             model = copy.deepcopy(init_model)
         else:
@@ -178,7 +172,7 @@ class CoTrainingRegressor(BaseEstimator, RegressorMixin):
             ).to(DEVICE)
             
         optimizer = optim.AdamW(model.parameters(), lr=self.lr, weight_decay=1e-4)
-        # 较短的 scheduler，适应快速迭代
+        # Short scheduler for fast iteration
         scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=self.epochs)
         criterion = RobustLoss(alpha=1.0).to(DEVICE)
         
@@ -205,12 +199,12 @@ class CoTrainingRegressor(BaseEstimator, RegressorMixin):
 
     def _estimate_uncertainty(self, model, X, model_type='xgb', n_samples=5, noise_std=0.05):
         """ 
-        通过输入扰动(Input Perturbation)估计不确定性 
-        返回: (predictions, uncertainty)
+        Estimate uncertainty via input perturbation 
+        Returns: (predictions, uncertainty)
         """
         preds_list = []
         
-        # 原始预测
+        # Original predictions
         if model_type == 'xgb':
             base_pred = model.predict(X)
         else: # nn
@@ -220,7 +214,7 @@ class CoTrainingRegressor(BaseEstimator, RegressorMixin):
                 base_pred = model(t_X).cpu().numpy().flatten()
         preds_list.append(base_pred)
         
-        # 扰动预测
+        # Perturbed predictions
         for _ in range(n_samples):
             X_noise = X + np.random.normal(0, noise_std, size=X.shape)
             if model_type == 'xgb':
@@ -233,7 +227,7 @@ class CoTrainingRegressor(BaseEstimator, RegressorMixin):
             preds_list.append(p)
             
         preds_stack = np.vstack(preds_list)
-        # 不确定性 = 预测的标准差 (Std Dev across perturbations)
+        # Uncertainty = Standard deviation across perturbations
         uncertainty = np.std(preds_stack, axis=0)
         mean_pred = np.mean(preds_stack, axis=0)
         
@@ -247,7 +241,7 @@ class CoTrainingRegressor(BaseEstimator, RegressorMixin):
             idx = np.random.choice(len(X_unlabeled), 5000, replace=False)
             X_unlabeled = X_unlabeled[idx]
         
-        # 1. 数据标准化
+        # 1. Data standardization
         X_all = np.vstack([X_labeled, X_unlabeled])
         if self.standardize_input:
             self.scaler_x.fit(X_all)
@@ -271,16 +265,16 @@ class CoTrainingRegressor(BaseEstimator, RegressorMixin):
         if self.verbose:
             print(f"[Co-Training] Feature Subsampling: {n_sub}/{n_features} features per view.")
             
-        # 初始化 L1, L2 集合 (View 1 & View 2 的训练集)
+        # Initialize L1, L2 sets (Training sets for View 1 & View 2)
         self.L1_X, self.L1_y = X_L_sc.copy(), y_L_sc.copy()
         self.L2_X, self.L2_y = X_L_sc.copy(), y_L_sc.copy()
         
-        # current unlabeled pool
+        # Current unlabeled pool
         U_X = X_U_sc.copy()
-        # mask to track which samples are still unlabeled
+        # Mask to track which samples are still unlabeled
         U_indices = np.arange(len(U_X))
         
-        # 2. 初始训练 (Bootstrap)
+        # 2. Initial training (Bootstrap)
         if self.verbose: print(f"[Co-Training] Initial Training...")
         # Train on View 1 Features
         self.xgb_model = self._train_xgboost(self.L1_X[:, self.view1_cols], self.L1_y)
@@ -294,14 +288,14 @@ class CoTrainingRegressor(BaseEstimator, RegressorMixin):
                 
             if self.verbose: print(f"[Co-Training] Iteration {iteration+1}/{self.max_iter} | U remaining: {len(U_indices)}")
             
-            # --- Step A: 从 U 中采样一个 Pool 候选集 (Pool-based selection) ---
-            # 为了效率，不评估所有 U，只随机选 pool_size 个
+            # --- Step A: Sample a pool from U (Pool-based selection) ---
+            # For efficiency, only evaluate a pool of size pool_size instead of all U
             current_pool_size = min(self.pool_size, len(U_indices))
             pool_idx_in_U = np.random.choice(len(U_indices), current_pool_size, replace=False)
-            pool_global_indices = U_indices[pool_idx_in_U] # 在原始 U 中的索引
-            pool_X = U_X[pool_idx_in_U] # 实际特征数据
+            pool_global_indices = U_indices[pool_idx_in_U] # Global indices in original U
+            pool_X = U_X[pool_idx_in_U] # Actual feature data
             
-            # --- Step B: 两个模型分别预测并评估不确定性 (Uncertainty Estimation) ---
+            # --- Step B: Estimate uncertainty for both models ---
             # Model 1 (XGB) - Use View 1 Features
             pred_1, unc_1 = self._estimate_uncertainty(self.xgb_model, pool_X[:, self.view1_cols], model_type='xgb')
             
@@ -312,45 +306,40 @@ class CoTrainingRegressor(BaseEstimator, RegressorMixin):
             # Select top-k confident samples from XGB (Model 1) to add to NN (Model 2)'s training set
             n_select = min(self.samples_per_iter, len(pool_X))
             
-            # 策略: 选择 unc 最小的
+            # Strategy: Select samples with minimum uncertainty
             idx_1_sorted = np.argsort(unc_1)
             selected_idx_1 = idx_1_sorted[:n_select]
             
-            # Select top-k confident samples from NN (Model 2) to add to XGB (Model 1)'s training set
+            # Select top-k confident samples from NN (Model 2) to add into XGBoost (Model 1)'s training set
             idx_2_sorted = np.argsort(unc_2)
             selected_idx_2 = idx_2_sorted[:n_select]
             
-            # --- Step D: 更新训练集 (Update Labeled Sets) ---
-            # 添加到 L2 (NN 的训练集) 的样本来自 XGB 的预测
+            # --- Step D: Update labeled sets ---
+            # Samples added to L2 (NN) come from XGBoost's predictions
             X_add_to_2 = pool_X[selected_idx_1]
             y_add_to_2 = pred_1[selected_idx_1]
             self.L2_X = np.vstack([self.L2_X, X_add_to_2])
             self.L2_y = np.concatenate([self.L2_y, y_add_to_2])
             
-            # 添加到 L1 (XGB 的训练集) 的样本来自 NN 的预测
+            # Samples added to L1 (XGBoost) come from NN's predictions
             X_add_to_1 = pool_X[selected_idx_2]
             y_add_to_1 = pred_2[selected_idx_2]
             self.L1_X = np.vstack([self.L1_X, X_add_to_1])
             self.L1_y = np.concatenate([self.L1_y, y_add_to_1])
             
-            # --- Step E: 从 U 中移除被选中的样本 (Remove from Pool) ---
-            # 注意: 如果两个模型选中了同一个样本，它会被移除
-            # 我们需要找出所有被选中的实际 global indices
+            # --- Step E: Remove selected samples from U ---
+            # Note: A sample selected by both models will be removed once
             selected_indices_in_pool = np.union1d(selected_idx_1, selected_idx_2)
             removed_global_indices = pool_global_indices[selected_indices_in_pool]
             
-            # 更新 U_indices, 移除这些 ID
-            # 使用 set diff
+            # Update U_indices using set difference
             U_indices = np.setdiff1d(U_indices, removed_global_indices)
             
-            # 更新 U_X... 其实不需要物理删除 U_X，只要维护 U_indices 即可
-            # 但为了简单，我们只维护 U_indices 映射到原始 X_U_sc
-            
-            # --- Step F: 重新训练模型 (Retrain) ---
-            # 重新训练比增量更稳定，尤其是在 Co-Training 中加入了伪标签后
+            # --- Step F: Retrain models ---
+            # Retraining is more stable than incremental updates in Co-Training
             # Train on View 1 Features
             self.xgb_model = self._train_xgboost(self.L1_X[:, self.view1_cols], self.L1_y)
-            # NN 选择从头训练 (Retrain) 以避免灾难性遗忘和累积的确认偏差
+            # NN retrains from scratch to avoid catastrophic forgetting and confirmation bias
             # Train on View 2 Features
             self.nn_model = self._train_nn(self.L2_X[:, self.view2_cols], self.L2_y, init_model=None)
             
@@ -376,7 +365,7 @@ class CoTrainingRegressor(BaseEstimator, RegressorMixin):
             nn_pred_sc = self.nn_model(t_X).cpu().numpy().flatten()
         nn_pred = self.scaler_y.inverse_transform(nn_pred_sc.reshape(-1,1)).flatten()
         
-        # 3. Ensemble (动态置信度集成，参考 HeSCo)
+        # 3. Ensemble (Dynamic confidence ensemble, similar to HeSCo)
         _, nn_instability = self._estimate_uncertainty(self.nn_model, X_sc[:, self.view2_cols], model_type='nn')
 
         min_inst = nn_instability.min()

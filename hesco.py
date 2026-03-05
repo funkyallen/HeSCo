@@ -17,6 +17,10 @@ DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 
 class SmoothPinballLoss(nn.Module):
+    """
+    Smooth Pinball Loss for Quantile Regression.
+    Uses Huber loss as a smooth approximation to the standard pinball loss.
+    """
     def __init__(self, quantiles=[0.25, 0.5, 0.75], beta=0.1):
         super().__init__()
         self.quantiles = quantiles
@@ -42,6 +46,9 @@ class SmoothPinballLoss(nn.Module):
 
 
 class ResBlock(nn.Module):
+    """
+    A standard residual block with LayerNorm and ReLU activation.
+    """
     def __init__(self, dim, dropout=0.1):
         super().__init__()
         self.net = nn.Sequential(
@@ -60,6 +67,10 @@ class ResBlock(nn.Module):
 
 
 class RegressionNetwork(nn.Module):
+    """
+    Neural Network backbone for HeSCo.
+    Outputs 3 values corresponding to the 1st, 2nd (median), and 3rd quartiles.
+    """
     def __init__(self, input_dim, hidden_dim=128, num_blocks=2, dropout=0.1):
         super().__init__()
         self.input_proj = nn.Sequential(
@@ -78,6 +89,12 @@ class RegressionNetwork(nn.Module):
 
 
 class HeSCo(BaseEstimator, RegressorMixin):
+    """
+    Heterogeneous Semi-supervised Co-distillation (HeSCo).
+    
+    HeSCo integrates a Gradient Boosting Tree (XGBoost) and a Deep Neural Network (DNN) 
+    through a mutual update and distillation mechanism to leverage unlabeled data.
+    """
     def __init__(
         self,
         use_mutual_update=True,
@@ -137,6 +154,7 @@ class HeSCo(BaseEstimator, RegressorMixin):
         self.nn_r2 = 0.0
 
     def _train_xgboost(self, X, y, sample_weight=None, init_model=None, update_trees=0):
+        """ Trains or updates an XGBoost model. """
         params = self.xgb_params.copy()
         params['random_state'] = self.random_state
 
@@ -151,6 +169,10 @@ class HeSCo(BaseEstimator, RegressorMixin):
         return model
 
     def _estimate_nn_reliability(self, X_tensor):
+        """ 
+        Estimates the reliability of NN predictions using the predicted Interquartile Range (IQR).
+        Higher IQR implies higher instability (uncertainty).
+        """
         self.nn_model.eval()
         with torch.no_grad():
             X_tensor = X_tensor.to(DEVICE)
@@ -169,6 +191,10 @@ class HeSCo(BaseEstimator, RegressorMixin):
         xgb_pred_current,
         X_U_all=None,
     ):
+        """
+        Updates XGBoost using high-confidence pseudo-labels from the NN.
+        Uses a soft-weighting scheme based on NN instability and prediction divergence.
+        """
         divergence = np.abs(nn_pred_U - xgb_pred_current)
         nn_conf_thresh = np.percentile(nn_instability, self.conf_percentile)
         mask_nn_trustworthy = nn_instability < nn_conf_thresh
@@ -199,6 +225,9 @@ class HeSCo(BaseEstimator, RegressorMixin):
         return self.xgb_model.predict(X_U_all if X_U_all is not None else X_U_sc)
 
     def fit(self, X_labeled, y_labeled, X_unlabeled):
+        """
+        Fits the HeSCo model using both labeled and unlabeled data.
+        """
         set_seed(self.random_state)
 
         X_all = np.vstack([X_labeled, X_unlabeled])
@@ -249,6 +278,7 @@ class HeSCo(BaseEstimator, RegressorMixin):
         self.nn_model.train()
 
         for epoch in range(self.epochs):
+            # Mutual Update Step: Update XGBoost using NN feedback at specific intervals
             if self.use_mutual_update and epoch in update_epochs and len(X_unlabeled) > 0:
                 n_u = len(t_X_U)
                 sample_size = min(self.unc_sample_size, n_u)
@@ -280,6 +310,7 @@ class HeSCo(BaseEstimator, RegressorMixin):
                 preds_l = self.nn_model(batch_x_l)
                 loss_sup = quantile_criterion(preds_l, batch_y_l)
 
+                # Distillation Step: NN learns from XGBoost on unlabeled data
                 loss_distill = torch.tensor(0.0).to(DEVICE)
 
                 ul_interval = int(1.0 / self.unlabeled_batch_ratio) if self.unlabeled_batch_ratio > 0 else 0
@@ -290,6 +321,7 @@ class HeSCo(BaseEstimator, RegressorMixin):
                     preds_u = self.nn_model(batch_x_u)
 
                     nn_instability_u = torch.abs(preds_u[:, 2] - preds_u[:, 0]).detach()
+                    # Calculate trust weight: higher weight when NN is uncertain (distrusts its own prediction)
                     tau = torch.median(nn_instability_u) + 1e-6
                     trust_xgb_weight = torch.tanh(nn_instability_u / tau)
 
@@ -319,6 +351,10 @@ class HeSCo(BaseEstimator, RegressorMixin):
         return self
 
     def predict(self, X):
+        """
+        Generates predictions for the input data.
+        Uses a dynamic ensemble of NN and XGBoost predictions if enabled.
+        """
         X_sc = self.scaler_x.transform(X) if self.standardize_input else X
 
         if self.xgb_model is None:
