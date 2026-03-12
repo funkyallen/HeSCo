@@ -10,11 +10,11 @@ import datetime
 import platform
 import sklearn
 import torch
-import xgboost as xgb # [New] Used to calculate purely supervised baseline scores
+import xgboost as xgb # [新增] 用于计算纯监督的基线分数
 from sklearn.metrics import mean_squared_error, r2_score
 
 # ============================================================
-# 1. Import dependencies and configuration
+# 1. 导入依赖与配置
 # ============================================================
 
 try:
@@ -23,7 +23,7 @@ try:
     from utils import set_seed
     from hesco import HeSCo
 except ImportError as e:
-    print(f"Error: Missing required files. Please ensure 'hesco.py' and 'run_benchmark.py' are in the current directory.\nDetailed error: {e}")
+    print(f"Error: 缺少必要文件。请确保 'hesco.py' 和 'run_benchmark.py' 在当前目录。\n详细错误: {e}")
     sys.exit(1)
 
 # 全局配置
@@ -42,19 +42,22 @@ TARGET_DATASETS = [
 ]
 
 SENSITIVITY_CONFIG = {
-    # Demonstrate robustness of pseudo-label weights (include 0.0 to align with ablation study)
+    # 证明伪标签权重的鲁棒性 (加入 0.0 与消融实验对齐)
     "unlabeled_weight_ratio": [0.0, 0.1, 0.3, 0.5, 0.8],
     
-    # Demonstrate that smooth quantiles (core innovation) are not fragile magic numbers
+    # 证明平滑分位数 (你的核心创新) 不是一个脆弱的魔法数字
     "pinball_beta": [0.01, 0.05, 0.1, 0.5, 1.0], 
     
-    # Demonstrate trade-off between quality and quantity: filter top 10% vs 70% confident samples
+    # 证明质与量的权衡：过滤最自信的 10% 还是 70%？
     "conf_percentile": [10, 30, 50, 70, 90],
     
-    # Depth of mutual learning iterations
+    # 互学习迭代的深浅
     "inc_trees": [10, 30, 50, 100],
     
-    "batch_size": [128, 256, 512]
+    "batch_size": [128, 256, 512],
+    
+    # 标签稀疏度鲁棒性: 验证不同标签样本比例下的表现
+    "labeled_ratio": [0.05, 0.1, 0.2, 0.3, 0.5]
 }
 
 DEFAULT_PARAMS = {
@@ -73,7 +76,7 @@ DEFAULT_PARAMS = {
 
 SEEDS = [42, 123, 456] 
 
-# ================= Helper Functions =================
+# ================= 辅助函数 =================
 
 def print_repro_info():
     print("Reproducibility:")
@@ -91,18 +94,18 @@ def print_repro_info():
         print(f"  - cudnn_deterministic: {torch.backends.cudnn.deterministic}")
         print(f"  - cudnn_benchmark: {torch.backends.cudnn.benchmark}")
 
-def get_dataset_splits_with_preprocessing(dataset_name, seed):
+def get_dataset_splits_with_preprocessing(dataset_name, seed, labeled_ratio=0.2):
     data_path = os.path.join(DATA_DIR, dataset_name)
     X, y = load_data(data_path)
     X_labeled, y_labeled, X_unlabeled, X_test, y_test = get_data_splits(
-        X, y, test_size=0.5, labeled_ratio=0.2, random_state=seed
+        X, y, test_size=0.5, labeled_ratio=labeled_ratio, random_state=seed
     )
     X_lbl_final, X_unl_final, X_test_final = preprocess_data(X_labeled, X_unlabeled, X_test)
     return X_lbl_final, y_labeled, X_unl_final, X_test_final, y_test
 
 def compute_xgboost_baselines(datasets, seeds):
     """
-    Run Supervised XGBoost to get baseline scores for reference in plots.
+    运行 Supervised XGBoost 获取基线分数，用于画图时的虚线参考。
     """
     print("\n--- Pre-computing Supervised XGBoost Baselines ---")
     baselines = {}
@@ -131,21 +134,29 @@ def compute_xgboost_baselines(datasets, seeds):
     return baselines
 
 def run_single_experiment(dataset, param_name, param_value, seed):
-    X_L, y_L, X_U, X_test, y_test = get_dataset_splits_with_preprocessing(dataset, seed)
+    current_labeled_ratio = DEFAULT_PARAMS.get("labeled_ratio", 0.2)
+    if param_name == "labeled_ratio":
+        current_labeled_ratio = param_value
+
+    X_L, y_L, X_U, X_test, y_test = get_dataset_splits_with_preprocessing(dataset, seed, labeled_ratio=current_labeled_ratio)
     
     current_params = DEFAULT_PARAMS.copy()
     current_params[param_name] = param_value
     
-    # When weight parameter is 0, it is equivalent to turning off mutual learning to save overhead
+    # 当权重参数为 0 时，等价于关闭互学习，节省开销
     if param_name in ["unlabeled_weight_ratio", "adversarial_weight"] and param_value == 0.0:
         current_params["use_mutual_update"] = False
+
+    model_params = current_params.copy()
+    if "labeled_ratio" in model_params:
+        del model_params["labeled_ratio"]
 
     xgb_params = {
         'n_estimators': 100, 'max_depth': 6, 'learning_rate': 0.05,
         'subsample': 0.8, 'tree_method': "hist", 'n_jobs': 4, 'random_state': seed
     }
 
-    model = HeSCo(xgb_params=xgb_params, standardize_input=False, random_state=seed, verbose=VERBOSE, **current_params)
+    model = HeSCo(xgb_params=xgb_params, standardize_input=False, random_state=seed, verbose=VERBOSE, **model_params)
     model.fit(X_L, y_L, X_U)
     preds = model.predict(X_test)
     
@@ -164,16 +175,42 @@ def main():
     print(f"Starting Sensitivity Analysis at {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print_repro_info()
     
+    # 计算基线时使用默认的 labeled_ratio (0.2)
     baselines = compute_xgboost_baselines(TARGET_DATASETS, SEEDS)
 
     results = []
     total_runs = sum(len(v) for v in SENSITIVITY_CONFIG.values()) * len(TARGET_DATASETS) * len(SEEDS)
     current_run = 0
 
+    ratio_baselines = {} # {dataset: {ratio: mean_r2}}
+
     if os.path.exists(OUTPUT_CSV):
         existing_df = pd.read_csv(OUTPUT_CSV)
     else:
-        existing_df = pd.DataFrame(columns=["Dataset", "Parameter", "Value", "Seed", "RMSE", "R2"])
+        existing_df = pd.DataFrame(columns=["Dataset", "Parameter", "Value", "Seed", "RMSE", "R2", "XGB_Baseline"])
+
+    # Pre-calculate baselines for specific ratios if needed
+    if "labeled_ratio" in SENSITIVITY_CONFIG:
+        print("\n--- Pre-computing per-ratio XGBoost Baselines ---")
+        for ds in TARGET_DATASETS:
+            ratio_baselines[ds] = {}
+            for ratio in SENSITIVITY_CONFIG["labeled_ratio"]:
+                r2_scores = []
+                for seed in SEEDS:
+                    try:
+                        X_L, y_L, X_U, X_test, y_test = get_dataset_splits_with_preprocessing(ds, seed, labeled_ratio=ratio)
+                        model = xgb.XGBRegressor(
+                            n_estimators=100, max_depth=6, learning_rate=0.05,
+                            subsample=0.8, tree_method="hist", n_jobs=4, random_state=seed
+                        )
+                        model.fit(X_L, y_L)
+                        pred = model.predict(X_test)
+                        r2_scores.append(r2_score(y_test, pred))
+                    except Exception as e:
+                        print(f"Failed ratio baseline for {ds} ratio {ratio} seed {seed}: {e}")
+                if r2_scores:
+                    ratio_baselines[ds][ratio] = np.mean(r2_scores)
+        print("--------------------------------------------------\n")
 
     new_results = []
     safe_values = pd.to_numeric(existing_df["Value"], errors='coerce')
@@ -200,6 +237,13 @@ def main():
                     print(f"[{current_run}/{total_runs}] Dataset: {ds} | {param_name}={val} | Seed={seed}")
                     try:
                         res = run_single_experiment(ds, param_name, val, seed)
+                        # 添加基线信息到结果中，方便后续绘图
+                        if param_name == "labeled_ratio":
+                            # 如果有缓存的比例基线，直接使用；否则计算单次
+                            res["XGB_Baseline"] = ratio_baselines[ds].get(val, 0.0)
+                        else:
+                            res["XGB_Baseline"] = baselines.get(ds, 0.0)
+                            
                         results.append(res)
                         new_results.append(res)
                         pd.DataFrame([res]).to_csv(OUTPUT_CSV, mode='a', header=not os.path.exists(OUTPUT_CSV), index=False)
@@ -207,7 +251,17 @@ def main():
                         print(f"    ! Error running {ds} with {param_name}={val}, Seed {seed}: {e}")
 
     df = pd.DataFrame(results)
+    # 填充缺失的 XGB_Baseline 列（针对旧缓存数据）
+    if "XGB_Baseline" not in df.columns:
+        df["XGB_Baseline"] = 0.0
     
+    for idx, row in df.iterrows():
+        if pd.isna(row["XGB_Baseline"]) or row["XGB_Baseline"] == 0.0:
+            if row["Parameter"] == "labeled_ratio":
+                df.at[idx, "XGB_Baseline"] = ratio_baselines.get(row["Dataset"], {}).get(row["Value"], 0.0)
+            else:
+                df.at[idx, "XGB_Baseline"] = baselines.get(row["Dataset"], 0.0)
+
     if len(new_results) > 0:
         print(f"\nNew experiments finished. Existing+New runs saved to {OUTPUT_CSV}")
     else:
@@ -236,17 +290,26 @@ def main():
                 
                 if data_ds.empty: continue
                 
-                # Plot HeSCo line
+                # 画 HeSCo 折线
                 sns.lineplot(
                     data=data_ds, x="Value", y="R2", 
                     marker="o", markersize=8, linewidth=2.5,
                     errorbar='sd', ax=ax, color=palette[i], label="HeSCo"
                 )
                 
-                # Plot baseline dashed line
-                ax.axhline(y=baselines.get(dataset, 0.0), color='gray', linestyle='--', linewidth=2, label="XGB Baseline")
-                
-                ax.set_title(dataset.replace(".csv", ""), fontsize=14, fontweight='bold', pad=10)
+                # 画基准
+                if param_name == "labeled_ratio":
+                    # 针对 labeled_ratio，XGBoost 的表现也会随比例变化，因此画成对应的折线
+                    # 计算各个 Value 下的 XGB_Baseline 平均值
+                    xgb_line = data_ds.groupby("Value")["XGB_Baseline"].mean().reset_index()
+                    sns.lineplot(
+                        data=xgb_line, x="Value", y="XGB_Baseline",
+                        color='gray', linestyle='--', linewidth=2, marker="s", markersize=6,
+                        ax=ax, label="XGB Baseline"
+                    )
+                else:
+                    # 其他参数下，XGB 基线是固定的水平线
+                    ax.axhline(y=baselines.get(dataset, 0.0), color='gray', linestyle='--', linewidth=2, label="XGB Baseline")
                 
                 if i >= 2:
                     ax.set_xlabel(param_name, fontsize=12) 
@@ -274,11 +337,11 @@ def main():
                  fig.delaxes(axes_flat[j])
 
             plt.tight_layout()
-            filename = os.path.join(PLOT_DIR, f"sensitivity_{param_name}_R2.png")
-            plt.savefig(filename, dpi=300, bbox_inches='tight')
+            filename = os.path.join(PLOT_DIR, f"sensitivity_{param_name}_R2.tif")
+            plt.savefig(filename, dpi=300, bbox_inches='tight', pil_kwargs={"compression": "tiff_lzw"})
             try:
                 # 只在能支持的系统上生成 PDF
-                plt.savefig(filename.replace(".png", ".pdf"), bbox_inches='tight') 
+                plt.savefig(filename.replace(".tif", ".pdf"), bbox_inches='tight') 
             except Exception:
                 pass
             plt.close()

@@ -25,6 +25,9 @@ from drill import Drill
 from ucvme import UCVME
 from rankup import RankUp
 from co_training import CoTrainingRegressor
+from ft_transformer import FTTransformer
+# from tabpfn_baseline import TabPFN
+from node_baseline import NODE
 
 # Suppress warnings
 warnings.filterwarnings("ignore", category=UserWarning, module="sklearn.preprocessing._discretization")
@@ -105,7 +108,7 @@ def run_benchmark():
     log_dir = os.path.join(os.path.dirname(__file__), "logs")
     os.makedirs(log_dir, exist_ok=True)
     
-    # Main log (contains all printed information)
+    # 主日志 (包含所有打印信息)
     log_filename = os.path.join(log_dir, f"hesco_benchmark_log_{timestamp_str}.log")
     sys.stdout = Logger(log_filename)
 
@@ -131,7 +134,7 @@ def run_benchmark():
         print(f"\nProcessing Dataset: {dataset_name}")
         print("-" * 80)
         
-        # Store results for the current dataset
+        # 存储当前数据集的结果
         # current_dataset_results[algo] = [ {RMSE:.., R2:..}, ... ]
         current_dataset_results = defaultdict(list)
         
@@ -143,7 +146,7 @@ def run_benchmark():
                 if VERBOSE:
                     print(f"\n  [Seed {seed}] Processing...")
                 else:
-                    # Print progress dots without newline
+                    # 打印进度点，不换行
                     sys.stdout.terminal.write(f".") 
                     sys.stdout.terminal.flush()
 
@@ -223,6 +226,15 @@ def run_benchmark():
                     ("Co-Training",
                      CoTrainingRegressor(xgb_params=xgb_params, standardize_input=True, random_state=seed, verbose=VERBOSE), "semi", False, False),
 
+                    ("FT-Transformer",
+                     FTTransformer(input_dim=input_dim, epochs=100, lr=1e-4, verbose=VERBOSE, random_state=seed), "semi", True, True),
+
+                    # ("TabPFN",
+                    #  TabPFN(verbose=VERBOSE, random_state=seed), "semi", False, True),
+
+                    ("NODE",
+                     NODE(input_dim=input_dim, epochs=200, lr=1e-3, verbose=VERBOSE, random_state=seed), "semi", True, True),
+
                     # ("Mean Teacher", 
                     #  MeanTeacher(input_dim=input_dim, epochs=100, lr=1e-3, verbose=VERBOSE, random_state=seed), "semi", True, True),
 
@@ -239,10 +251,15 @@ def run_benchmark():
                     # So we FORCE using the processed data (X_lbl_scaled) which is leakage-free and robust.
                     # We ignore `use_scaled_x` flag and always use the processed data.
                     
-                    curr_X_lbl = X_lbl_scaled 
                     curr_y_lbl = y_lbl_scaled if use_scaled_y else y_lbl
-                    curr_X_unl = X_unl_scaled 
-                    curr_X_test = X_test_scaled
+                    if name == "TabPFN":
+                        curr_X_lbl = X_lbl
+                        curr_X_unl = X_unl
+                        curr_X_test = X_test
+                    else:
+                        curr_X_lbl = X_lbl_scaled
+                        curr_X_unl = X_unl_scaled
+                        curr_X_test = X_test_scaled
                     
                     try:
                         if mode == "supervised":
